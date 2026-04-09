@@ -1,19 +1,15 @@
 """
 main.py
 -------
-Entry point for the Textract RAG pipeline.
+Entry point for the document RAG pipeline. All configuration is read from .env.
 
-Usage
------
-# Ingest a PDF (uploads to S3, parses with Textract, chunks, indexes):
-    python main.py ingest --pdf path/to/document.pdf --s3-key docs/document.pdf
+Usage (from the app/ directory):
 
-# Query the indexed document:
-    python main.py query --question "What is the total revenue for Q3?"
+    # Ingest the PDF specified by INGEST_PDF_PATH in .env:
+    uv run python main.py ingest
 
-Environment
------------
-All configuration is read from a .env file (see .env.example).
+    # Launch an interactive query session:
+    uv run python main.py query
 """
 
 import argparse
@@ -21,11 +17,10 @@ import logging
 import os
 import sys
 
-import boto3
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from document_processor import parse_document_from_s3
+from parsers import get_parser
 from chunker import chunk_document
 from enrichment import enrich_chunks
 from vector_store import get_qdrant_client, ensure_collection, upsert_chunks
@@ -43,18 +38,19 @@ logger = logging.getLogger("main")
 
 
 # ---------------------------------------------------------------------------
-# Config loader
+# Config
 # ---------------------------------------------------------------------------
 
 def load_config() -> dict:
-    """Load all required variables from .env into a dict."""
+    """Load all configuration from .env.
+
+    Core vars are validated eagerly. Backend-specific vars (S3_BUCKET, AWS_REGION,
+    etc.) are validated lazily inside get_parser() so non-Textract users don't
+    need AWS credentials at all.
+    """
     load_dotenv()
 
-    required = [
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_REGION",
-        "S3_BUCKET",
+    core_required = [
         "OPENAI_API_KEY",
         "OPENAI_EMBEDDING_MODEL",
         "OPENAI_CHAT_MODEL",
@@ -64,61 +60,61 @@ def load_config() -> dict:
         "MAX_CHUNK_TOKENS",
     ]
 
-    config: dict = {}
-    missing: list = []
-    for key in required:
-        value = os.getenv(key)
-        if not value:
-            missing.append(key)
-        config[key] = value
-
+    cfg: dict = {k: os.getenv(k) for k in core_required}
+    missing = [k for k, v in cfg.items() if not v]
     if missing:
-        logger.error("Missing environment variables: %s", ", ".join(missing))
+        logger.error("Missing required environment variables: %s", ", ".join(missing))
         sys.exit(1)
 
-    config["VECTOR_SIZE"] = int(config["VECTOR_SIZE"])
-    config["MAX_CHUNK_TOKENS"] = int(config["MAX_CHUNK_TOKENS"])
-    return config
+    cfg["VECTOR_SIZE"]      = int(cfg["VECTOR_SIZE"])
+    cfg["MAX_CHUNK_TOKENS"] = int(cfg["MAX_CHUNK_TOKENS"])
+
+    # Backend-specific and optional vars — passed through as-is
+    for key in [
+        "DOCUMENT_PARSER",
+        "S3_BUCKET",
+        "AWS_REGION",
+        "TEXTRACT_S3_PREFIX",
+        "INGEST_PDF_PATH",
+        "TOP_K",
+    ]:
+        cfg[key] = os.getenv(key, "")
+
+    return cfg
 
 
 # ---------------------------------------------------------------------------
-# Sub-commands
+# Commands
 # ---------------------------------------------------------------------------
 
-def cmd_ingest(args, cfg: dict) -> None:
-    """Upload PDF to S3 and run the full ingestion pipeline."""
+def cmd_ingest(cfg: dict) -> None:
+    """Run the full ingestion pipeline for the PDF at INGEST_PDF_PATH."""
+    pdf_path = cfg.get("INGEST_PDF_PATH", "").strip()
+    if not pdf_path:
+        logger.error("INGEST_PDF_PATH is not set in .env")
+        sys.exit(1)
 
-    # 1. Upload local PDF to S3
-    logger.info("Uploading '%s' to s3://%s/%s …", args.pdf, cfg["S3_BUCKET"], args.s3_key)
-    s3 = boto3.client(
-        "s3",
-        region_name=cfg["AWS_REGION"],
-        aws_access_key_id=cfg["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=cfg["AWS_SECRET_ACCESS_KEY"],
-    )
-    s3.upload_file(args.pdf, cfg["S3_BUCKET"], args.s3_key)
-    logger.info("Upload complete.")
-
-    # 2. Parse document with Textract → ParseResult
-    parse_result = parse_document_from_s3(
-        s3_bucket=cfg["S3_BUCKET"],
-        s3_key=args.s3_key,
-        aws_region=cfg["AWS_REGION"],
-    )
+    # 1. Parse (backend owned by DOCUMENT_PARSER env var)
+    parser       = get_parser(cfg)
+    parse_result = parser.parse(pdf_path)
     logger.info(
         "Parsed %d pages, %d total elements.",
         len(parse_result.pages),
         parse_result.total_elements,
     )
 
-    # 3. Document-aware chunking across all pages
+    # 2. Document-aware chunking
     chunks = chunk_document(parse_result, max_chunk_tokens=cfg["MAX_CHUNK_TOKENS"])
 
-    # 4. Enrich chunks (image captions, word/char counts)
+    # 3. Enrich chunks (GPT vision captions for table/image + word/char counts)
     openai_client = OpenAI(api_key=cfg["OPENAI_API_KEY"])
-    chunks = enrich_chunks(chunks=chunks, openai_client=openai_client, chat_model=cfg["OPENAI_CHAT_MODEL"])
+    chunks = enrich_chunks(
+        chunks=chunks,
+        openai_client=openai_client,
+        chat_model=cfg["OPENAI_CHAT_MODEL"],
+    )
 
-    # 5. Upsert into Qdrant
+    # 4. Embed and index into Qdrant
     qdrant = get_qdrant_client(cfg["QDRANT_URL"])
     ensure_collection(qdrant, cfg["QDRANT_COLLECTION"], cfg["VECTOR_SIZE"])
     upsert_chunks(
@@ -129,63 +125,55 @@ def cmd_ingest(args, cfg: dict) -> None:
         embedding_model=cfg["OPENAI_EMBEDDING_MODEL"],
     )
 
-    logger.info("Ingestion complete. %d chunks indexed.", len(chunks))
     modality_counts: dict = {}
     for c in chunks:
         modality_counts[c.modality] = modality_counts.get(c.modality, 0) + 1
-    logger.info("Modality breakdown: %s", modality_counts)
+    logger.info("Ingestion complete. %d chunks indexed. Breakdown: %s", len(chunks), modality_counts)
 
 
-def cmd_query(args, cfg: dict) -> None:
+def cmd_query(cfg: dict, question: str) -> None:
     """Run a single RAG query against the indexed collection."""
+    top_k         = int(cfg.get("TOP_K") or 5)
     openai_client = OpenAI(api_key=cfg["OPENAI_API_KEY"])
-    qdrant = get_qdrant_client(cfg["QDRANT_URL"])
+    qdrant        = get_qdrant_client(cfg["QDRANT_URL"])
 
     response = answer(
-        query=args.question,
+        query=question,
         qdrant=qdrant,
         collection_name=cfg["QDRANT_COLLECTION"],
         openai_client=openai_client,
         embedding_model=cfg["OPENAI_EMBEDDING_MODEL"],
         chat_model=cfg["OPENAI_CHAT_MODEL"],
-        top_k=args.top_k,
+        top_k=top_k,
     )
 
     print("\n" + "=" * 60)
-    print(f"Q: {args.question}")
+    print(f"Q: {question}")
     print("=" * 60)
     print(f"A: {response}")
     print("=" * 60 + "\n")
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# Entry point
 # ---------------------------------------------------------------------------
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Textract RAG pipeline")
-    sub = parser.add_subparsers(dest="command", required=True)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Document RAG pipeline")
+    sub    = parser.add_subparsers(dest="command", required=True)
 
-    ingest_p = sub.add_parser("ingest", help="Process and index a PDF document")
-    ingest_p.add_argument("--pdf",    required=True, help="Local path to the PDF file")
-    ingest_p.add_argument("--s3-key", required=True, help="S3 object key (e.g. docs/file.pdf)")
+    sub.add_parser("ingest", help="Ingest the PDF at INGEST_PDF_PATH in .env")
 
     query_p = sub.add_parser("query", help="Ask a question about indexed documents")
     query_p.add_argument("--question", required=True, help="Natural-language question")
-    query_p.add_argument("--top-k", type=int, default=5, help="Chunks to retrieve (default: 5)")
 
-    return parser
-
-
-def main() -> None:
-    cfg = load_config()
-    parser = build_parser()
     args = parser.parse_args()
+    cfg  = load_config()
 
     if args.command == "ingest":
-        cmd_ingest(args, cfg)
+        cmd_ingest(cfg)
     elif args.command == "query":
-        cmd_query(args, cfg)
+        cmd_query(cfg, args.question)
 
 
 if __name__ == "__main__":

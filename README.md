@@ -62,21 +62,35 @@ cp .env.example .env
 ### Required `.env` variables
 
 ```
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=us-east-1
-S3_BUCKET=your-bucket-name
+# Parser backend (textract | docling — default: textract)
+DOCUMENT_PARSER=textract
 
+# PDF to ingest
+INGEST_PDF_PATH=/path/to/your/document.pdf
+
+# Query
+TOP_K=5
+
+# OpenAI (always required)
 OPENAI_API_KEY=...
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 OPENAI_CHAT_MODEL=gpt-4o-mini
 
-QDRANT_URL=./qdrant_data
+# Qdrant (always required)
+QDRANT_URL=http://localhost:6333
 QDRANT_COLLECTION=naive_rag
 VECTOR_SIZE=1536
+MAX_CHUNK_TOKENS=512
+
+# AWS / Textract (only required when DOCUMENT_PARSER=textract)
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=us-east-1
+S3_BUCKET=your-bucket-name
+TEXTRACT_S3_PREFIX=aws-textract-input
 ```
 
-### AWS requirements
+### AWS requirements (Textract backend only)
 - IAM user/role with `textract:*` and `s3:*` permissions
 - S3 bucket in the same region as Textract (multi-page PDFs must be on S3)
 
@@ -84,23 +98,35 @@ VECTOR_SIZE=1536
 
 ## Usage
 
-All commands are run from the `app/` directory using `uv run`.
+All configuration lives in `.env` — no command-line arguments needed.
 
 ### Ingest a PDF
 
+Set `INGEST_PDF_PATH` in `.env` to the local PDF you want to process, then:
+
 ```bash
 cd app
-uv run python app/main.py ingest --pdf data/docling_report-3-5.pdf --s3-key aws-textract-input/doc.pdf
+uv run python main.py ingest
 ```
 
-This uploads the PDF to S3, runs Textract async analysis, enriches image chunks with GPT captions, and indexes everything into the local Qdrant store.
+Uploads the PDF to S3 (Textract backend), runs async document analysis, enriches table and image chunks with GPT-4o-mini vision captions, and indexes everything into the local Qdrant store.
 
 ### Query
 
 ```bash
 cd app
-uv run python app/main.py query --question "Intel(R) Xeon E5-2690"
-uv run python app/main.py query --question "Summarise the tables on page 3." --top-k 8
+uv run python main.py query
+```
+
+Launches an interactive session — type your question at the prompt, `exit` or `Ctrl+C` to quit. Retrieval depth is controlled by `TOP_K` in `.env` (default: 5).
+
+### Switching parser backends
+
+Change one line in `.env`:
+
+```
+DOCUMENT_PARSER=docling   # local, no AWS required — install: uv add docling
+DOCUMENT_PARSER=textract  # default, requires S3_BUCKET + AWS credentials
 ```
 
 ---
@@ -127,11 +153,14 @@ uv run python app/main.py query --question "Summarise the tables on page 3." --t
 
 ```
 app/
-├── main.py               # CLI entry point (ingest / query subcommands)
-├── document_processor.py # Textract extraction → ParsedElement / ParseResult
-├── chunker.py            # Document-aware chunker → Chunk list
-├── enrichment.py         # GPT vision captions (table + image) & word/char counts
-├── vector_store.py       # Qdrant collection management, embedding, upsert & search
-├── rag_query.py          # Retrieval + GPT-5.4-mini answer generation
-└── .env.example
+├── main.py                        # CLI entry point (ingest / query — config from .env)
+├── parsers/
+│   ├── __init__.py                # get_parser(cfg) factory — reads DOCUMENT_PARSER env var
+│   ├── base.py                    # ParsedElement, PageResult, ParseResult, BaseDocumentParser
+│   ├── textract_parser.py         # TextractParser: S3 upload + Textract async analysis
+│   └── docling_parser.py          # DoclingParser: local processing, no AWS required
+├── chunker.py                     # Document-aware chunker → Chunk list
+├── enrichment.py                  # GPT vision captions (table + image) & word/char counts
+├── vector_store.py                # Qdrant collection management, embedding, upsert & search
+└── rag_query.py                   # Retrieval + GPT-4o-mini answer generation
 ```

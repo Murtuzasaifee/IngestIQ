@@ -22,24 +22,23 @@ cp .env.example .env   # then edit .env with your credentials
 
 ### Running the app
 
-All `uv run` commands must be executed from the `app/` directory — modules use flat (non-package) imports relative to that directory.
+All `uv run` commands must be executed from the `app/` directory — modules use flat (non-package) imports relative to that directory. All configuration is in `.env` — no CLI arguments needed.
 
 ```bash
 cd app
 
-# Ingest a PDF (uploads to S3 then indexes via Textract)
-uv run python main.py ingest --pdf /path/to/report.pdf --s3-key docs/report.pdf
+# Ingest the PDF at INGEST_PDF_PATH in .env
+uv run python main.py ingest
 
-# Query indexed documents
-uv run python main.py query --question "What is the net profit margin?"
-uv run python main.py query --question "Summarise tables on page 3" --top-k 8
+# Interactive query session (type 'exit' or Ctrl+C to quit)
+uv run python main.py query
 ```
 
 ### Validate imports
 
 ```bash
 cd app
-uv run python -c "from document_processor import parse_document_from_s3; from chunker import chunk_document; from enrichment import enrich_chunks; from vector_store import get_qdrant_client; from rag_query import answer; print('All imports OK')"
+uv run python -c "from parsers.base import ParsedElement, ParseResult; from parsers import get_parser; from chunker import chunk_document; from enrichment import enrich_chunks; from vector_store import get_qdrant_client; from rag_query import answer; print('All imports OK')"
 ```
 
 ### Dependency management
@@ -60,13 +59,25 @@ uv pip list
 
 ## Environment
 
-Copy `.env` (or create from the fields below) before running:
+Key `.env` variables:
 
 ```
-AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET
+# Parser backend — controls which backend get_parser() returns
+DOCUMENT_PARSER=textract          # textract | docling (default: textract)
+
+# Ingest / query
+INGEST_PDF_PATH=/path/to/doc.pdf
+TOP_K=5
+
+# OpenAI (always required)
 OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL, OPENAI_CHAT_MODEL
-QDRANT_URL, QDRANT_COLLECTION, VECTOR_SIZE
-MAX_CHUNK_TOKENS
+
+# Qdrant (always required)
+QDRANT_URL, QDRANT_COLLECTION, VECTOR_SIZE, MAX_CHUNK_TOKENS
+
+# AWS / Textract (only when DOCUMENT_PARSER=textract)
+AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET
+TEXTRACT_S3_PREFIX=aws-textract-input   # S3 key prefix; filename appended automatically
 ```
 
 `VECTOR_SIZE` must match the embedding model dimension (1536 for `text-embedding-3-small`).
@@ -94,21 +105,25 @@ PDF → S3 → Textract (async, LAYOUT + TABLES features)
 
 | Module | Role |
 |---|---|
-| `document_processor.py` | Calls Textract async API via `amazon-textract-textractor`; produces `DocumentChunk` dataclass instances with modality (`text`/`table`/`image`), bbox, and page number |
-| `enrichment.py` | Adds GPT-4o-mini vision captions for image chunks; computes `word_count`/`char_count` on all chunks |
-| `vector_store.py` | Manages Qdrant client and collection; embeds text via OpenAI; upserts/searches `PointStruct` payloads |
+| `parsers/base.py` | Shared data contract: `ParsedElement`, `PageResult`, `ParseResult` dataclasses + `BaseDocumentParser` ABC + shared utilities (`bbox_dict`, `crop_base64`, `assemble_markdown`) |
+| `parsers/textract_parser.py` | `TextractParser`: uploads local PDF to S3, calls Textract async API (LAYOUT + TABLES), rasterizes pages locally with PyMuPDF, returns `ParseResult` |
+| `parsers/docling_parser.py` | `DoclingParser`: local Docling-based parsing, no AWS required — maps Docling block types to the same `ParseResult` contract |
+| `parsers/__init__.py` | `get_parser(cfg)` factory — reads `DOCUMENT_PARSER` env var, validates backend-specific config, returns the correct parser instance |
+| `chunker.py` | Document-aware chunker; imports data types from `parsers.base`; produces `Chunk` list |
+| `enrichment.py` | GPT-4o-mini vision captions for table + image chunks; `word_count`/`char_count` on all chunks |
+| `vector_store.py` | Qdrant collection management; embeds via OpenAI; upserts/searches `PointStruct` payloads |
 | `rag_query.py` | Retrieves top-k chunks, formats context block with modality labels, calls GPT for answer generation |
-| `main.py` | CLI entry point — validates env, routes `ingest` / `query` subcommands |
+| `main.py` | CLI entry point — reads all config from `.env`, routes `ingest` / `query`, no CLI arguments |
 
 ### Key data model
 
-`DocumentChunk` (defined in `document_processor.py`) is the central transfer object through the pipeline. `extra_metadata` dict carries fields that vary by modality (`source`, `confidence`, `num_rows`/`num_cols` for tables, `word_count`/`char_count` after enrichment) and is flattened into the Qdrant payload on upsert.
+`ParsedElement` / `PageResult` / `ParseResult` (defined in `parsers/base.py`) are the shared contract between any parser backend and the rest of the pipeline. `Chunk` (defined in `chunker.py`) is the transfer object for enrichment and vector store. `chunk.metadata` dict carries `source`, `word_count`, `char_count` and is flattened into the Qdrant payload on upsert.
 
 ### Textract integration notes
 
-- Multi-page PDFs **must** be on S3 before calling Textract (single-page can be local, but this pipeline always uploads first).
-- `save_image=False` is set on `start_document_analysis()` — page rasterization is handled separately by `_rasterize_pdf_from_s3()` using `fitz` (PyMuPDF). **Do not set `save_image=True`** — it delegates to `pdf2image` which requires the `poppler` system binary and will raise `PDFInfoNotInstalledError`.
-- The `block_type` attribute name varies across `amazon-textract-textractor` versions; `document_processor.py` checks `layout_type` → `block_type` → `raw_object["BlockType"]` defensively.
+- Multi-page PDFs **must** be on S3 before calling Textract — `TextractParser.parse()` handles the upload internally using `TEXTRACT_S3_PREFIX/{filename}` as the S3 key.
+- `save_image=False` is mandatory in `start_document_analysis()` — page rasterization is done from the **local PDF** using PyMuPDF (`fitz`). **Do not set `save_image=True`** — it delegates to `pdf2image` which requires the `poppler` system binary and will raise `PDFInfoNotInstalledError`.
+- The `block_type` attribute name varies across `amazon-textract-textractor` versions; `textract_parser.py` checks `layout_type` → `block_type` → `raw_object["BlockType"]` defensively.
 
 ### Qdrant storage
 
@@ -126,11 +141,3 @@ Running research log for this project. Every time an approach fails, a wrong ass
 When a mistake is identified — caught by Murtuza or self-detected — append it here immediately. Do not wait until end of session.
 
 <!-- entries below -->
-
-[2026-04-08] [document_processor / rasterization] — Used `save_image=True` in `extractor.start_document_analysis()` → `PDFInfoNotInstalledError: Unable to get page count. Is poppler installed and in PATH?`. Textractor delegates rasterization to `pdf2image` which requires the `poppler` system binary. → Set `save_image=False` and rasterize pages ourselves in `_rasterize_pdf_from_s3()` using `fitz` (PyMuPDF, already a project dependency). Download PDF bytes from S3 via boto3, open with `fitz.open(stream=..., filetype="pdf")`, render each page with `get_pixmap()`, convert to `PIL.Image`. Result stored in a `Dict[int, Image.Image]` keyed by 1-based page number.
-
-[2026-04-08] [document_processor / Table API] — Accessed `table.rows` and `table.rows[0].cells` to get row/col counts → `AttributeError: 'Table' object has no attribute 'rows'`. The Textractor `Table` entity exposes `row_count` and `column_count` integer properties directly. → Use `table.row_count` and `table.column_count`.
-
-[2026-04-08] [vector_store / Qdrant API] — Called `qdrant.search(collection_name=..., query_vector=..., limit=..., with_payload=True)` → `AttributeError: 'QdrantClient' object has no attribute 'search'`. The `search` method was removed in qdrant-client v1.x. → Use `qdrant.query_points(collection_name=..., query=<vector>, limit=..., with_payload=True)` which returns a `QueryResponse`; iterate over `response.points` (list of `ScoredPoint`) instead of the result directly.
-
-[2026-04-08] [document_processor / Textractor] — Passed `aws_access_key_id` and `aws_secret_access_key` as kwargs to `Textractor()` → `TypeError: Textractor.__init__() got an unexpected keyword argument 'aws_access_key_id'`. `Textractor` only accepts `profile_name`, `region_name`, `kms_key_id`; it builds its own `boto3.session.Session` internally. → Do not pass explicit credentials to `Textractor`. Rely on env vars (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) which `load_dotenv()` already sets before this code runs — boto3 picks them up automatically.

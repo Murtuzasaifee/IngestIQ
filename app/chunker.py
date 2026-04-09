@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from document_processor import ParsedElement, ParseResult
+from parsers.base import ParsedElement, ParseResult
 
 logger = logging.getLogger(__name__)
 
