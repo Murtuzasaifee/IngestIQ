@@ -79,7 +79,10 @@ def upsert_chunks(
         payload = {
             "chunk_id":      chunk.chunk_id,
             "modality":      chunk.modality,
-            "chunk_text":    chunk.text,
+            # Use embed_text so chunk_text matches the vector semantics:
+            # for image/table chunks this is the GPT caption (if generated),
+            # for text chunks this is the raw text — same as before.
+            "chunk_text":    embed_text,
             "page_number":   chunk.page,
             "elements":      chunk.elements,
             "bbox":          chunk.bbox,

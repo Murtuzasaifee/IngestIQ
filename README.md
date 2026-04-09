@@ -3,7 +3,7 @@
 Minimal Retrieval-Augmented Generation pipeline using:
 - **Amazon Textract** (via `amazon-textract-textractor`) for layout-aware document parsing
 - **Qdrant** (local on-disk) as the vector store
-- **OpenAI** `gpt-4o-mini` for embeddings, image captioning, and answer generation
+- **OpenAI** `gpt-5.4-mini` for embeddings, image captioning, and answer generation
 
 ---
 
@@ -12,15 +12,25 @@ Minimal Retrieval-Augmented Generation pipeline using:
 ```
 PDF → S3 → Textract (LAYOUT + TABLES)
               │
-              ├── text   chunks  ──────────────────┐
-              ├── table  chunks (markdown)          │  enrich
-              └── image  chunks (bbox crop + caption)│
-                                                   ▼
-                                         OpenAI Embeddings
-                                                   │
-                                             Qdrant (local)
-                                                   │
-                                         Query → Retrieve → GPT-4o-mini → Answer
+              ├── LAYOUT_* blocks → text chunks
+              ├── TABLE blocks    → table chunks (markdown)
+              └── LAYOUT_FIGURE  → image chunks (bbox crop as base64 JPEG)
+                                          │
+                              ┌───────────┴────────────┐
+                         table chunks             image chunks
+                      GPT-4o-mini vision       GPT-4o-mini vision
+                           caption                  caption
+                              └───────────┬────────────┘
+                                          │
+                              document-aware chunker
+                                          │
+                                OpenAI Embeddings
+                                (caption for table/image,
+                                 raw text for text chunks)
+                                          │
+                                    Qdrant (local)
+                                          │
+                            Query → Retrieve → GPT-4o-mini → Answer
 ```
 
 ### Modalities extracted
@@ -80,7 +90,7 @@ All commands are run from the `app/` directory using `uv run`.
 
 ```bash
 cd app
-uv run python main.py ingest --pdf /path/to/report.pdf --s3-key docs/report.pdf
+uv run python app/main.py ingest --pdf data/docling_report-3-5.pdf --s3-key aws-textract-input/doc.pdf
 ```
 
 This uploads the PDF to S3, runs Textract async analysis, enriches image chunks with GPT captions, and indexes everything into the local Qdrant store.
@@ -89,8 +99,8 @@ This uploads the PDF to S3, runs Textract async analysis, enriches image chunks 
 
 ```bash
 cd app
-uv run python main.py query --question "What is the net profit margin?"
-uv run python main.py query --question "Summarise the tables on page 3." --top-k 8
+uv run python app/main.py query --question "Intel(R) Xeon E5-2690"
+uv run python app/main.py query --question "Summarise the tables on page 3." --top-k 8
 ```
 
 ---
@@ -101,29 +111,27 @@ uv run python main.py query --question "Summarise the tables on page 3." --top-k
 |-------|-------------|
 | `chunk_id` | `p<page>_<index>` |
 | `modality` | `text` / `table` / `image` |
-| `chunk_text` | Raw extracted text |
+| `chunk_text` | GPT caption for table/image chunks; raw text for text chunks — matches the embedded vector |
+| `caption` | GPT-4o-mini vision caption (table and image chunks only) |
 | `page_number` | 1-based page index |
-| `layout_type` | Textract layout block type |
-| `bbox` | Normalised bounding box `{left, top, width, height}` |
-| `image_base64` | JPEG crop as base64 (image only) |
-| `image_caption` | GPT-generated caption (image only) |
+| `elements` | Textract block labels that make up the chunk (e.g. `["table"]`, `["title", "text"]`) |
+| `bbox` | Normalised bounding box `{left, top, width, height}` (atomic chunks only) |
+| `image_base64` | JPEG crop as base64 (table and image chunks) |
 | `source` | `s3://bucket/key` |
-| `confidence` | Textract confidence score |
-| `word_count` | Word count of chunk text |
-| `char_count` | Character count |
-| `num_rows` / `num_cols` | Table dimensions (table only) |
+| `word_count` | Word count of `chunk_text` |
+| `char_count` | Character count of `chunk_text` |
 
 ---
 
 ## File structure
 
 ```
-naive_rag/
-├── main.py               # Entry point & CLI
-├── document_processor.py # Textract extraction → DocumentChunk list
-├── enrichment.py         # Image captioning & metadata enrichment
-├── vector_store.py       # Qdrant upsert & search
-├── rag_query.py          # Retrieval + GPT generation
-├── requirements.txt
+app/
+├── main.py               # CLI entry point (ingest / query subcommands)
+├── document_processor.py # Textract extraction → ParsedElement / ParseResult
+├── chunker.py            # Document-aware chunker → Chunk list
+├── enrichment.py         # GPT vision captions (table + image) & word/char counts
+├── vector_store.py       # Qdrant collection management, embedding, upsert & search
+├── rag_query.py          # Retrieval + GPT-5.4-mini answer generation
 └── .env.example
 ```
