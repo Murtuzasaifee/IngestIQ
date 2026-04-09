@@ -15,21 +15,63 @@ from vector_store import search
 
 logger = logging.getLogger(__name__)
 
+_SEPARATOR = "-" * 60
+
+
+def _print_retrieved_chunks(hits: List[Tuple[float, dict]]) -> None:
+    """Print retrieved chunks to stdout for inspection.
+
+    For table chunks, side-by-side comparison of chunk_text and caption
+    is printed so it is easy to verify whether they carry the same content.
+    """
+    print(f"\n{'=' * 60}")
+    print(f"RETRIEVED CHUNKS ({len(hits)} total)")
+    print(f"{'=' * 60}")
+
+    for rank, (score, payload) in enumerate(hits, start=1):
+        modality   = payload.get("modality", "text")
+        page       = payload.get("page_number", "?")
+        chunk_id   = payload.get("chunk_id", "?")
+        chunk_text = payload.get("chunk_text", "")
+        caption    = payload.get("caption", "") or ""
+
+        print(f"\n[{rank}] chunk_id={chunk_id}  page={page}  modality={modality}  score={score:.4f}")
+        print(_SEPARATOR)
+
+        if modality in ("image", "table"):
+            # Show chunk_text (markdown / extracted text)
+            print("  chunk_text:")
+            preview = chunk_text[:400].replace("\n", "\n    ")
+            print(f"    {preview}" + ("…" if len(chunk_text) > 400 else ""))
+
+            # Show caption (GPT vision caption)
+            print("  caption:")
+            cap_preview = caption[:400].replace("\n", "\n    ")
+            print(f"    {cap_preview}" + ("…" if len(caption) > 400 else ""))
+
+            if modality == "table":
+                # Explicit confirmation: are they the same?
+                same = chunk_text.strip() == caption.strip()
+                print(f"  [table check] chunk_text == caption: {same}")
+        else:
+            preview = chunk_text[:400].replace("\n", "\n  ")
+            print(f"  {preview}" + ("…" if len(chunk_text) > 400 else ""))
+
+    print(f"\n{'=' * 60}\n")
+
 
 def _build_context(hits: List[Tuple[float, dict]]) -> str:
-    """
-    Format retrieved chunks into a readable context block for the LLM prompt.
-    Includes modality label so the model is aware of content type.
-    """
+    """Format retrieved chunks into a readable context block for the LLM prompt."""
     parts = []
     for rank, (score, payload) in enumerate(hits, start=1):
         modality = payload.get("modality", "text")
         page     = payload.get("page_number", "?")
         text     = payload.get("chunk_text", "")
 
-        # For image chunks prefer the generated caption as context
-        if modality == "image":
-            text = payload.get("image_caption") or text
+        # For image and table chunks prefer the GPT caption as LLM context
+        # (richer natural-language description than raw markdown)
+        if modality in ("image", "table"):
+            text = payload.get("caption") or text
 
         parts.append(
             f"[{rank}] (page={page}, modality={modality}, score={score:.3f})\n{text}"
@@ -48,7 +90,7 @@ def answer(
     top_k: int = 5,
 ) -> str:
     """
-    Full RAG pipeline: retrieve → prompt → generate.
+    Full RAG pipeline: retrieve → print chunks → prompt → generate.
 
     Parameters
     ----------
@@ -71,6 +113,8 @@ def answer(
     if not hits:
         return "No relevant content found in the document."
 
+    _print_retrieved_chunks(hits)
+
     context = _build_context(hits)
 
     system_prompt = (
@@ -90,7 +134,7 @@ def answer(
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ],
-        max_tokens=512,
+        max_completion_tokens=512,
         temperature=0.2,
     )
 

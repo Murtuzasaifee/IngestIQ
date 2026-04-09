@@ -65,10 +65,10 @@ def upsert_chunks(
     points: List[PointStruct] = []
 
     for chunk in chunks:
-        # For image chunks prefer the GPT caption for embedding (richer semantics)
+        # For image/table chunks prefer the GPT caption for embedding (richer semantics)
         embed_text = (
-            chunk.image_caption or chunk.text
-            if chunk.modality == "image"
+            chunk.caption or chunk.text
+            if chunk.modality in ("image", "table")
             else chunk.text
         )
         if not embed_text.strip():
@@ -84,7 +84,7 @@ def upsert_chunks(
             "elements":      chunk.elements,
             "bbox":          chunk.bbox,
             "image_base64":  chunk.image_base64,
-            "image_caption": chunk.image_caption,
+            "caption": chunk.caption,
             **chunk.metadata,
         }
         points.append(PointStruct(id=str(uuid.uuid4()), vector=vector, payload=payload))

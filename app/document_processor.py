@@ -247,20 +247,22 @@ def parse_document_from_s3(
                 image_base64=image_b64,
             ))
 
-        # --- Table blocks (structured markdown rendering) ---
+        # --- Table blocks (structured markdown rendering + image crop) ---
         for table in page.tables:
             try:
                 text = table.to_markdown()
             except Exception:
                 text = table.get_text()
 
+            table_bbox = _bbox_dict(table.bbox)
             raw_elements.append(ParsedElement(
                 label="table",
                 text=text,
-                bbox=_bbox_dict(table.bbox),
+                bbox=table_bbox,
                 score=round(getattr(table, "confidence", 1.0) or 1.0, 4),
                 reading_order=0,
                 page_number=page_num,
+                image_base64=_crop_base64(page_image, table_bbox),
             ))
 
         # Sort by vertical then horizontal position to restore reading order

@@ -41,7 +41,7 @@ class Chunk:
     elements: List[str]                    # labels of constituent elements
     bbox: Optional[dict] = None            # bbox of the primary element (atomic chunks only)
     image_base64: Optional[str] = None     # JPEG crop as base64 (image chunks only)
-    image_caption: Optional[str] = None    # GPT caption — filled in by enrichment step
+    caption: Optional[str] = None          # GPT caption — filled in by enrichment step
     metadata: dict = field(default_factory=dict)   # source, word_count, char_count, …
 
 
