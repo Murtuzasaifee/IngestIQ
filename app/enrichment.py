@@ -1,9 +1,9 @@
 """
 enrichment.py
 -------------
-Enriches DocumentChunks with:
-  - Image captions (GPT-4o-mini vision) for image modality chunks.
-  - Additional computed metadata fields.
+Enriches Chunk objects with:
+  - image_caption (GPT-4o-mini vision) for image modality chunks
+  - word_count and char_count in metadata for all chunks
 """
 
 import logging
@@ -11,84 +11,64 @@ from typing import List
 
 from openai import OpenAI
 
-from document_processor import DocumentChunk
+from chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
 
-def _generate_image_caption(client: OpenAI, image_b64: str, model: str) -> str:
-    """
-    Call the OpenAI vision API to generate a short caption for a cropped image.
-    Returns an empty string on failure.
-    """
+def _generate_caption(client: OpenAI, image_b64: str, model: str) -> str:
+    """Call the OpenAI vision API to caption a cropped document figure."""
     try:
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}",
-                                "detail": "low",   # keeps token cost minimal
-                            },
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}",
+                            "detail": "low",   # minimise token cost
                         },
-                        {
-                            "type": "text",
-                            "text": (
-                                "Provide a concise one-sentence caption describing "
-                                "this image from a document."
-                            ),
-                        },
-                    ],
-                }
-            ],
+                    },
+                    {
+                        "type": "text",
+                        "text": "Provide a concise one-sentence caption for this document figure.",
+                    },
+                ],
+            }],
             max_tokens=128,
         )
-        return response.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
     except Exception as exc:
-        logger.warning("Image captioning failed: %s", exc)
+        logger.warning("Caption generation failed: %s", exc)
         return ""
 
 
 def enrich_chunks(
-    chunks: List[DocumentChunk],
+    chunks: List[Chunk],
     openai_client: OpenAI,
     chat_model: str,
-) -> List[DocumentChunk]:
-    """
-    Mutates each DocumentChunk in-place by adding:
-      - image_caption  (image modality only)
-      - word_count     (text / table)
-      - char_count
+) -> List[Chunk]:
+    """Enrich chunks in-place with captions (image chunks) and token counts (all chunks).
 
-    Parameters
-    ----------
-    chunks : List[DocumentChunk]
-    openai_client : OpenAI
-        Initialised OpenAI client.
-    chat_model : str
-        Model name (e.g. "gpt-4o-mini").
+    Args:
+        chunks: Chunks produced by chunk_document.
+        openai_client: Initialised OpenAI client.
+        chat_model: Vision-capable model for image captioning (e.g. gpt-4o-mini).
 
-    Returns
-    -------
-    The same list with enriched chunks.
+    Returns:
+        The same list with enriched chunks.
     """
     for chunk in chunks:
-        # ---- universal metadata ----
-        chunk.extra_metadata["word_count"] = len(chunk.chunk_text.split())
-        chunk.extra_metadata["char_count"] = len(chunk.chunk_text)
+        chunk.metadata["word_count"] = len(chunk.text.split())
+        chunk.metadata["char_count"] = len(chunk.text)
 
-        # ---- image-specific enrichment ----
         if chunk.modality == "image" and chunk.image_base64:
             logger.info("Generating caption for chunk %s …", chunk.chunk_id)
-            chunk.image_caption = _generate_image_caption(
-                openai_client, chunk.image_base64, chat_model
-            )
-            # Use caption as searchable text if layout text is sparse
-            if not chunk.chunk_text and chunk.image_caption:
-                chunk.chunk_text = chunk.image_caption
+            chunk.image_caption = _generate_caption(openai_client, chunk.image_base64, chat_model)
+            # Fall back to caption as searchable text if the figure had no extracted text
+            if not chunk.text.strip() and chunk.image_caption:
+                chunk.text = chunk.image_caption
 
     return chunks

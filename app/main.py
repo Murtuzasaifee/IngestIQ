@@ -1,11 +1,11 @@
 """
 main.py
 -------
-Entry point for the Naive RAG pipeline.
+Entry point for the Textract RAG pipeline.
 
 Usage
 -----
-# Ingest a PDF (uploads to S3 then processes with Textract):
+# Ingest a PDF (uploads to S3, parses with Textract, chunks, indexes):
     python main.py ingest --pdf path/to/document.pdf --s3-key docs/document.pdf
 
 # Query the indexed document:
@@ -25,7 +25,8 @@ import boto3
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from document_processor import extract_chunks_from_s3
+from document_processor import parse_document_from_s3
+from chunker import chunk_document
 from enrichment import enrich_chunks
 from vector_store import get_qdrant_client, ensure_collection, upsert_chunks
 from rag_query import answer
@@ -60,10 +61,11 @@ def load_config() -> dict:
         "QDRANT_URL",
         "QDRANT_COLLECTION",
         "VECTOR_SIZE",
+        "MAX_CHUNK_TOKENS",
     ]
 
-    config = {}
-    missing = []
+    config: dict = {}
+    missing: list = []
     for key in required:
         value = os.getenv(key)
         if not value:
@@ -75,6 +77,7 @@ def load_config() -> dict:
         sys.exit(1)
 
     config["VECTOR_SIZE"] = int(config["VECTOR_SIZE"])
+    config["MAX_CHUNK_TOKENS"] = int(config["MAX_CHUNK_TOKENS"])
     return config
 
 
@@ -96,24 +99,26 @@ def cmd_ingest(args, cfg: dict) -> None:
     s3.upload_file(args.pdf, cfg["S3_BUCKET"], args.s3_key)
     logger.info("Upload complete.")
 
-    # 2. Extract chunks via Textract
-    chunks = extract_chunks_from_s3(
+    # 2. Parse document with Textract → ParseResult
+    parse_result = parse_document_from_s3(
         s3_bucket=cfg["S3_BUCKET"],
         s3_key=args.s3_key,
         aws_region=cfg["AWS_REGION"],
-        aws_access_key_id=cfg["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=cfg["AWS_SECRET_ACCESS_KEY"],
+    )
+    logger.info(
+        "Parsed %d pages, %d total elements.",
+        len(parse_result.pages),
+        parse_result.total_elements,
     )
 
-    # 3. Enrich chunks (captions, metadata)
+    # 3. Document-aware chunking across all pages
+    chunks = chunk_document(parse_result, max_chunk_tokens=cfg["MAX_CHUNK_TOKENS"])
+
+    # 4. Enrich chunks (image captions, word/char counts)
     openai_client = OpenAI(api_key=cfg["OPENAI_API_KEY"])
-    chunks = enrich_chunks(
-        chunks=chunks,
-        openai_client=openai_client,
-        chat_model=cfg["OPENAI_CHAT_MODEL"],
-    )
+    chunks = enrich_chunks(chunks=chunks, openai_client=openai_client, chat_model=cfg["OPENAI_CHAT_MODEL"])
 
-    # 4. Upsert into Qdrant
+    # 5. Upsert into Qdrant
     qdrant = get_qdrant_client(cfg["QDRANT_URL"])
     ensure_collection(qdrant, cfg["QDRANT_COLLECTION"], cfg["VECTOR_SIZE"])
     upsert_chunks(
@@ -124,10 +129,8 @@ def cmd_ingest(args, cfg: dict) -> None:
         embedding_model=cfg["OPENAI_EMBEDDING_MODEL"],
     )
 
-    logger.info("Ingestion pipeline complete. %d chunks indexed.", len(chunks))
-
-    # Print a short summary
-    modality_counts = {}
+    logger.info("Ingestion complete. %d chunks indexed.", len(chunks))
+    modality_counts: dict = {}
     for c in chunks:
         modality_counts[c.modality] = modality_counts.get(c.modality, 0) + 1
     logger.info("Modality breakdown: %s", modality_counts)
@@ -136,7 +139,7 @@ def cmd_ingest(args, cfg: dict) -> None:
 def cmd_query(args, cfg: dict) -> None:
     """Run a single RAG query against the indexed collection."""
     openai_client = OpenAI(api_key=cfg["OPENAI_API_KEY"])
-    qdrant        = get_qdrant_client(cfg["QDRANT_URL"])
+    qdrant = get_qdrant_client(cfg["QDRANT_URL"])
 
     response = answer(
         query=args.question,
@@ -160,26 +163,24 @@ def cmd_query(args, cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Naive RAG with Textract + Qdrant")
+    parser = argparse.ArgumentParser(description="Textract RAG pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # ingest
     ingest_p = sub.add_parser("ingest", help="Process and index a PDF document")
     ingest_p.add_argument("--pdf",    required=True, help="Local path to the PDF file")
     ingest_p.add_argument("--s3-key", required=True, help="S3 object key (e.g. docs/file.pdf)")
 
-    # query
     query_p = sub.add_parser("query", help="Ask a question about indexed documents")
     query_p.add_argument("--question", required=True, help="Natural-language question")
-    query_p.add_argument("--top-k",    type=int, default=5, help="Chunks to retrieve (default: 5)")
+    query_p.add_argument("--top-k", type=int, default=5, help="Chunks to retrieve (default: 5)")
 
     return parser
 
 
-def main():
-    cfg    = load_config()
+def main() -> None:
+    cfg = load_config()
     parser = build_parser()
-    args   = parser.parse_args()
+    args = parser.parse_args()
 
     if args.command == "ingest":
         cmd_ingest(args, cfg)

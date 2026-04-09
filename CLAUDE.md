@@ -39,7 +39,7 @@ uv run python main.py query --question "Summarise tables on page 3" --top-k 8
 
 ```bash
 cd app
-uv run python -c "from document_processor import DocumentChunk; from enrichment import enrich_chunks; from vector_store import get_qdrant_client; from rag_query import answer; print('All imports OK')"
+uv run python -c "from document_processor import parse_document_from_s3; from chunker import chunk_document; from enrichment import enrich_chunks; from vector_store import get_qdrant_client; from rag_query import answer; print('All imports OK')"
 ```
 
 ### Dependency management
@@ -66,9 +66,11 @@ Copy `.env` (or create from the fields below) before running:
 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET
 OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL, OPENAI_CHAT_MODEL
 QDRANT_URL, QDRANT_COLLECTION, VECTOR_SIZE
+MAX_CHUNK_TOKENS
 ```
 
 `VECTOR_SIZE` must match the embedding model dimension (1536 for `text-embedding-3-small`).
+`MAX_CHUNK_TOKENS` controls the maximum estimated tokens per text chunk (default: 512).
 
 ## Architecture
 
