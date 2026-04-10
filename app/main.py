@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import sys
+from collections import Counter
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -129,10 +130,8 @@ def cmd_ingest(cfg: dict) -> None:
         crops_dir=cfg["CROPS_DIR"] or None,
     )
 
-    modality_counts: dict = {}
-    for c in chunks:
-        modality_counts[c.modality] = modality_counts.get(c.modality, 0) + 1
-    logger.info("Ingestion complete. %d chunks indexed. Breakdown: %s", len(chunks), modality_counts)
+    modality_counts = Counter(c.modality for c in chunks)
+    logger.info("Ingestion complete. %d chunks indexed. Breakdown: %s", len(chunks), dict(modality_counts))
 
 
 def cmd_query(cfg: dict, question: str) -> None:

@@ -46,9 +46,6 @@ _BLOCK_TO_LABEL: dict[str, str] = {
     "LAYOUT_KEY_VALUE_SET":  "key_value",
 }
 
-_SKIP_LABELS = {"page_header", "page_footer", "page_number"}
-
-
 def _get_block_type(block) -> str:
     """Defensively resolve Textract block type across textractor versions."""
     return (
@@ -74,7 +71,7 @@ class TextractParser(BaseDocumentParser):
         self._setup_cloudwatch_logging()
 
     # ------------------------------------------------------------------
-    # Public interface
+    # Private helpers
     # ------------------------------------------------------------------
 
     def _setup_cloudwatch_logging(self) -> None:
@@ -103,6 +100,10 @@ class TextractParser(BaseDocumentParser):
         ))
         logger.addHandler(handler)
         logger.info("CloudWatch logging enabled → %s / %s", log_group, log_stream)
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     def parse(self, pdf_path: str) -> ParseResult:
         filename = Path(pdf_path).name

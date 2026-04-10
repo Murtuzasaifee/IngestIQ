@@ -147,8 +147,10 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
     Sends the local PDF directly to the Azure API as bytes (no S3/blob storage
     required), then maps the structured result to ParsedElement / ParseResult.
 
-    Files larger than Azure DI's 4MB inline limit are automatically split into
-    per-page submissions and the results merged transparently.
+    Always processes one page at a time: each page is extracted as a single-page
+    PDF via PyMuPDF and submitted separately. This avoids the 4MB inline limit,
+    prevents complex-table pages from being silently dropped, and ensures
+    page_number mapping is always correct.
     """
 
     def __init__(self, endpoint: str, api_key: str) -> None:
@@ -162,7 +164,6 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
     def parse(self, pdf_path: str) -> ParseResult:
         try:
             from azure.ai.documentintelligence import DocumentIntelligenceClient
-            from azure.ai.documentintelligence.models import DocumentContentFormat
             from azure.core.credentials import AzureKeyCredential
         except ImportError as exc:
             raise RuntimeError(
@@ -254,7 +255,7 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
         self,
         result: Any,
         page_images: Dict[int, Image.Image],
-        pages_elements: dict,
+        pages_elements: Dict[int, List[ParsedElement]],
         page_num_override: Optional[int] = None,
     ) -> None:
         """Map an Azure DI AnalyzeResult into pages_elements.

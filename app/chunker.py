@@ -83,7 +83,7 @@ def chunk_document(
     - Chunk ``page`` is set to the page of the first element that entered it.
 
     Args:
-        parse_result: Output of parse_document_from_s3.
+        parse_result: Output of parser.parse().
         max_chunk_tokens: Maximum estimated tokens per text chunk (default 512).
 
     Returns:
