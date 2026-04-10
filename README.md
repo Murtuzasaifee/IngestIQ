@@ -1,9 +1,9 @@
-# Naive RAG — Textract + Qdrant
+# IngestIQ
 
-Minimal Retrieval-Augmented Generation pipeline using:
-- **Amazon Textract** (via `amazon-textract-textractor`) for layout-aware document parsing
+Intelligent document ingestion and Retrieval-Augmented Generation pipeline using:
+- **Amazon Textract** or **Azure Document Intelligence** for layout-aware document parsing
 - **Qdrant** (local on-disk) as the vector store
-- **OpenAI** `gpt-5.4-mini` for embeddings, image captioning, and answer generation
+- **OpenAI** for embeddings, image captioning, and answer generation
 
 ---
 

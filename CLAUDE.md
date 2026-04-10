@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Clone and enter the project
-git clone <repo-url> && cd aws-textract-rag
+git clone <repo-url> && cd IngestIQ
 
 # 3. Install all dependencies (creates .venv automatically using Python 3.13)
 uv sync

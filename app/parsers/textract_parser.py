@@ -86,7 +86,7 @@ class TextractParser(BaseDocumentParser):
         optional — defaults shown below). Guards against duplicate handlers
         if the parser is instantiated more than once in the same process.
         """
-        log_group  = os.getenv("CW_LOG_GROUP",  "/aws-textract-rag/textract")
+        log_group  = os.getenv("CW_LOG_GROUP",  "/ingestiq/textract")
         log_stream = os.getenv("CW_LOG_STREAM", "textract-parser")
 
         # Skip if a CloudWatch handler is already registered

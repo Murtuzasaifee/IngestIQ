@@ -1,7 +1,7 @@
 [project]
-name = "aws-textract-rag"
+name = "IngestIQ"
 version = "0.1.0"
-description = "Add your description here"
+description = "IngestIQ — intelligent document ingestion and RAG pipeline"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
