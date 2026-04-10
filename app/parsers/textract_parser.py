@@ -15,12 +15,10 @@ vars, which load_dotenv() in main.py sets before this code runs.
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 import boto3
-import fitz  # PyMuPDF
 import watchtower
-from PIL import Image
 from textractor import Textractor
 from textractor.data.constants import TextractFeatures
 
@@ -29,9 +27,9 @@ from parsers.base import (
     ParsedElement,
     PageResult,
     ParseResult,
-    assemble_markdown,
     bbox_dict,
     crop_base64,
+    rasterize_pdf,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,7 +121,7 @@ class TextractParser(BaseDocumentParser):
         logger.info("Textract complete. Pages: %d", document.num_pages)
 
         # Rasterize from the local file — no need to re-download from S3
-        page_images = self._rasterize(pdf_path)
+        page_images = rasterize_pdf(pdf_path)
         page_results: List[PageResult] = []
 
         for page in document.pages:
@@ -187,7 +185,6 @@ class TextractParser(BaseDocumentParser):
             page_results.append(PageResult(
                 page_number=page_num,
                 elements=raw_elements,
-                markdown=assemble_markdown(raw_elements),
             ))
             logger.info("Page %d: %d elements", page_num, len(raw_elements))
 
@@ -206,14 +203,3 @@ class TextractParser(BaseDocumentParser):
         )
         logger.info("Upload complete.")
 
-    def _rasterize(self, pdf_path: str, dpi: int = 250) -> Dict[int, Image.Image]:
-        """Rasterize every page of a local PDF with PyMuPDF (no poppler required)."""
-        scale  = dpi / 72.0
-        matrix = fitz.Matrix(scale, scale)
-        images: Dict[int, Image.Image] = {}
-        with fitz.open(pdf_path) as pdf:
-            for i in range(len(pdf)):
-                pix = pdf[i].get_pixmap(matrix=matrix)
-                images[i + 1] = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        logger.info("Rasterized %d pages at %d DPI", len(images), dpi)
-        return images

@@ -8,10 +8,11 @@ from a local PDF file, then maps them to the shared ParseResult contract.
 
 The PDF is sent directly to the Azure API as bytes — no cloud storage required.
 
-File size handling:
-    Azure DI enforces a 4MB limit on inline byte submissions. Files larger than
-    4MB are automatically split into individual pages using PyMuPDF and sent as
-    separate single-page API calls. Results are merged back into one ParseResult.
+Processing strategy:
+    Always processes one page at a time using PyMuPDF to extract single-page
+    PDFs and submit each separately. This solves the 4MB inline limit, prevents
+    complex-table pages from being silently dropped, and ensures page_number
+    mapping is always correct.
 
 Required env vars:
     AZURE_DI_ENDPOINT  — e.g. https://<resource>.cognitiveservices.azure.com/
@@ -25,7 +26,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import fitz  # PyMuPDF
+import fitz  # PyMuPDF — used for per-page PDF splitting
 from PIL import Image
 
 from parsers.base import (
@@ -33,8 +34,8 @@ from parsers.base import (
     ParsedElement,
     PageResult,
     ParseResult,
-    assemble_markdown,
     crop_base64,
+    rasterize_pdf,
 )
 
 logger = logging.getLogger(__name__)
@@ -172,7 +173,7 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
         logger.info("Starting Azure DI analysis: %s", pdf_path)
 
         # Rasterize first — gives us the true page count and images for crops.
-        page_images = self._rasterize(pdf_path)
+        page_images = rasterize_pdf(pdf_path)
         n_pages     = len(page_images)
 
         client = DocumentIntelligenceClient(
@@ -193,7 +194,7 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
                 single_doc.close()
 
                 logger.info("Page %d/%d — %d bytes", pg_num, n_pages, len(page_bytes))
-                result = self._call_azure_di(client, page_bytes, DocumentContentFormat, "1")
+                result = self._call_azure_di(client, page_bytes, "1")
                 logger.info(
                     "  → %d paragraphs | %d tables | %d figures",
                     len(result.paragraphs or []),
@@ -216,7 +217,6 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
             page_results.append(PageResult(
                 page_number=pg_num,
                 elements=elements,
-                markdown=assemble_markdown(elements),
             ))
             label_counts: Counter = Counter(el.label for el in elements)
             logger.info("Page %d: %d elements %s", pg_num, len(elements), dict(label_counts))
@@ -233,12 +233,14 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _call_azure_di(self, client, pdf_bytes: bytes, DocumentContentFormat, pages: str) -> Any:
-        """Submit pdf_bytes to Azure DI and return the AnalyzeResult."""
-        # output_content_format=MARKDOWN uses a different internal renderer that
-        # does not gate page inclusion on successful table cell-grid resolution.
-        # In TEXT mode a page dominated by a complex table can be silently dropped;
-        # MARKDOWN mode always emits every page with best-effort markdown tables.
+    def _call_azure_di(self, client, pdf_bytes: bytes, pages: str) -> Any:
+        """Submit pdf_bytes to Azure DI and return the AnalyzeResult.
+
+        MARKDOWN output format is required: it does not gate page inclusion on
+        successful table cell-grid resolution, so complex-table pages are never
+        silently dropped (unlike the default TEXT mode).
+        """
+        from azure.ai.documentintelligence.models import DocumentContentFormat
         poller = client.begin_analyze_document(
             model_id="prebuilt-layout",
             body=pdf_bytes,
@@ -309,14 +311,3 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
                 image_base64=crop_base64(page_images.get(actual_pg), bbox),
             ))
 
-    def _rasterize(self, pdf_path: str, dpi: int = 250) -> Dict[int, Image.Image]:
-        """Rasterize every page with PyMuPDF for image/table crops."""
-        scale  = dpi / 72.0
-        matrix = fitz.Matrix(scale, scale)
-        images: Dict[int, Image.Image] = {}
-        with fitz.open(pdf_path) as pdf:
-            for i in range(len(pdf)):
-                pix = pdf[i].get_pixmap(matrix=matrix)
-                images[i + 1] = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        logger.info("Rasterized %d pages at %d DPI", len(images), dpi)
-        return images

@@ -41,9 +41,9 @@ All pipeline improvement suggestions are tracked here with status, priority, and
 
 | # | Status | Priority | Title |
 |---|--------|----------|-------|
-| 6 | [ ] | Low | Move `_rasterize()` to `base.py` — identical code in both `textract_parser.py` and `azure_di_parser.py` |
-| 7 | [ ] | Low | Remove dead `PageResult.markdown` field and `assemble_markdown()` calls from both parsers |
-| 8 | [ ] | Low | Fix `_call_azure_di` passing `DocumentContentFormat` class as a parameter — move the try/import to module level |
+| 6 | [x] | Low | Move `_rasterize()` to `base.py` — identical code in both `textract_parser.py` and `azure_di_parser.py` |
+| 7 | [x] | Low | Remove dead `PageResult.markdown` field and `assemble_markdown()` calls from both parsers |
+| 8 | [x] | Low | Fix `_call_azure_di` passing `DocumentContentFormat` class as a parameter — move the try/import to module level |
 
 **#6 Detail:** `_rasterize()` is verbatim identical in both parsers (same signature, same `fitz.Matrix`, same `Image.frombytes`). Extract to `base.py` as a standalone function.
 

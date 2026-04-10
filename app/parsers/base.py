@@ -5,7 +5,7 @@ Shared data contract and abstract base class for all document parser backends.
 
 ParsedElement → PageResult → ParseResult is the universal output shape that
 chunker.py, enrichment.py, and the rest of the pipeline consume. Every parser
-backend (Textract, Docling, …) must produce this structure — nothing else in
+backend (Textract, Azure DI, …) must produce this structure — nothing else in
 the pipeline needs to know which backend is active.
 """
 
@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+import fitz  # PyMuPDF
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,6 @@ class ParsedElement:
 class PageResult:
     page_number: int
     elements: List[ParsedElement]
-    markdown: str                      # assembled Markdown from elements
 
 
 @dataclass
@@ -51,11 +51,16 @@ class ParseResult:
 
 
 # ---------------------------------------------------------------------------
-# Shared utilities (used by multiple backends)
+# Shared utilities
 # ---------------------------------------------------------------------------
 
+# Labels that carry no retrieval value — skipped by chunker and parsers alike.
+# Defined here as the single source of truth; chunker.py imports this set.
+_SKIP_LABELS = {"page_header", "page_footer", "page_number"}
+
+
 def bbox_dict(bbox) -> Optional[dict]:
-    """Normalise a bounding box object to a plain dict."""
+    """Normalise a Textract bounding box object to a plain dict."""
     if bbox is None:
         return None
     return {
@@ -82,31 +87,21 @@ def crop_base64(page_image: Image.Image, bbox: Optional[dict]) -> Optional[str]:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-_SKIP_LABELS = {"page_header", "page_footer", "page_number"}
+def rasterize_pdf(pdf_path: str, dpi: int = 250) -> Dict[int, Image.Image]:
+    """Rasterize every page of a local PDF with PyMuPDF (no poppler required).
 
-_MARKDOWN_PREFIX: dict[str, str] = {
-    "title":         "# ",
-    "section_title": "## ",
-    "figure_title":  "**",
-}
-_MARKDOWN_SUFFIX: dict[str, str] = {
-    "figure_title": "**",
-}
-
-
-def assemble_markdown(elements: List[ParsedElement]) -> str:
-    """Convert a list of parsed elements into a Markdown string."""
-    parts: List[str] = []
-    for el in elements:
-        if el.label in _SKIP_LABELS or not el.text.strip():
-            continue
-        prefix = _MARKDOWN_PREFIX.get(el.label, "")
-        suffix = _MARKDOWN_SUFFIX.get(el.label, "")
-        if el.label == "figure":
-            parts.append(f"[Figure — page {el.page_number}]")
-        else:
-            parts.append(f"{prefix}{el.text.strip()}{suffix}")
-    return "\n\n".join(parts)
+    Returns a 1-based dict mapping page_number → PIL Image. Used by all parser
+    backends for bbox-based image/table crops.
+    """
+    scale  = dpi / 72.0
+    matrix = fitz.Matrix(scale, scale)
+    images: Dict[int, Image.Image] = {}
+    with fitz.open(pdf_path) as pdf:
+        for i in range(len(pdf)):
+            pix = pdf[i].get_pixmap(matrix=matrix)
+            images[i + 1] = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    logger.info("Rasterized %d pages at %d DPI", len(images), dpi)
+    return images
 
 
 # ---------------------------------------------------------------------------
