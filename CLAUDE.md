@@ -31,7 +31,7 @@ cd app
 uv run python main.py ingest
 
 # Interactive query session (type 'exit' or Ctrl+C to quit)
-uv run python main.py query
+uv run python app/main.py query --question "Intel Xeon E5-2690"
 ```
 
 ### Validate imports
@@ -63,7 +63,7 @@ Key `.env` variables:
 
 ```
 # Parser backend — controls which backend get_parser() returns
-DOCUMENT_PARSER=textract          # textract | docling (default: textract)
+DOCUMENT_PARSER=textract          # textract | azure (default: textract)
 
 # Ingest / query
 INGEST_PDF_PATH=/path/to/doc.pdf
@@ -107,7 +107,7 @@ PDF → S3 → Textract (async, LAYOUT + TABLES features)
 |---|---|
 | `parsers/base.py` | Shared data contract: `ParsedElement`, `PageResult`, `ParseResult` dataclasses + `BaseDocumentParser` ABC + shared utilities (`bbox_dict`, `crop_base64`, `assemble_markdown`) |
 | `parsers/textract_parser.py` | `TextractParser`: uploads local PDF to S3, calls Textract async API (LAYOUT + TABLES), rasterizes pages locally with PyMuPDF, returns `ParseResult` |
-| `parsers/docling_parser.py` | `DoclingParser`: local Docling-based parsing, no AWS required — maps Docling block types to the same `ParseResult` contract |
+| `parsers/azure_di_parser.py` | `AzureDocumentIntelligenceParser`: Azure Document Intelligence-based parsing, uses Azure Document Intelligence API — maps Azure Document Intelligence block types to the same `ParseResult` contract |
 | `parsers/__init__.py` | `get_parser(cfg)` factory — reads `DOCUMENT_PARSER` env var, validates backend-specific config, returns the correct parser instance |
 | `chunker.py` | Document-aware chunker; imports data types from `parsers.base`; produces `Chunk` list |
 | `enrichment.py` | GPT-4o-mini vision captions for table + image chunks; `word_count`/`char_count` on all chunks |

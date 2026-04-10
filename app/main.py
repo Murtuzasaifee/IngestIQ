@@ -75,6 +75,8 @@ def load_config() -> dict:
         "S3_BUCKET",
         "AWS_REGION",
         "TEXTRACT_S3_PREFIX",
+        "AZURE_DI_ENDPOINT",
+        "AZURE_DI_KEY",
         "INGEST_PDF_PATH",
         "TOP_K",
     ]:

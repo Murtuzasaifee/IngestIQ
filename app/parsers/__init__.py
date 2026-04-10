@@ -41,12 +41,16 @@ def get_parser(cfg: dict) -> BaseDocumentParser:
             s3_prefix=cfg.get("TEXTRACT_S3_PREFIX") or "",
         )
 
-    if backend == "docling":
-        from parsers.docling_parser import DoclingParser
-        return DoclingParser()
+    if backend == "azure":
+        _require(cfg, ["AZURE_DI_ENDPOINT", "AZURE_DI_KEY"], backend)
+        from parsers.azure_di_parser import AzureDocumentIntelligenceParser
+        return AzureDocumentIntelligenceParser(
+            endpoint=cfg["AZURE_DI_ENDPOINT"],
+            api_key=cfg["AZURE_DI_KEY"],
+        )
 
     raise ValueError(
-        f"Unknown DOCUMENT_PARSER: '{backend}'. Valid values: textract, docling"
+        f"Unknown DOCUMENT_PARSER: '{backend}'. Valid values: textract, azure"
     )
 
 

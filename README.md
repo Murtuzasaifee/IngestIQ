@@ -62,7 +62,7 @@ cp .env.example .env
 ### Required `.env` variables
 
 ```
-# Parser backend (textract | docling — default: textract)
+# Parser backend (textract | azure — default: textract)
 DOCUMENT_PARSER=textract
 
 # PDF to ingest
@@ -125,7 +125,7 @@ Launches an interactive session — type your question at the prompt, `exit` or 
 Change one line in `.env`:
 
 ```
-DOCUMENT_PARSER=docling   # local, no AWS required — install: uv add docling
+DOCUMENT_PARSER=azure   # local, no AWS required — install: uv add azure-ai-documentintelligence
 DOCUMENT_PARSER=textract  # default, requires S3_BUCKET + AWS credentials
 ```
 
@@ -158,7 +158,7 @@ app/
 │   ├── __init__.py                # get_parser(cfg) factory — reads DOCUMENT_PARSER env var
 │   ├── base.py                    # ParsedElement, PageResult, ParseResult, BaseDocumentParser
 │   ├── textract_parser.py         # TextractParser: S3 upload + Textract async analysis
-│   └── docling_parser.py          # DoclingParser: local processing, no AWS required
+│   └── azure_di_parser.py          # AzureDocumentIntelligenceParser: Azure Document Intelligence-based parsing, uses Azure Document Intelligence API — maps Azure Document Intelligence block types to the same `ParseResult` contract
 ├── chunker.py                     # Document-aware chunker → Chunk list
 ├── enrichment.py                  # GPT vision captions (table + image) & word/char counts
 ├── vector_store.py                # Qdrant collection management, embedding, upsert & search
