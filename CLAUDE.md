@@ -129,6 +129,14 @@ PDF → S3 → Textract (async, LAYOUT + TABLES features)
 
 Qdrant is used in local on-disk mode (`QdrantClient(path=...)`). The collection uses cosine distance. Each point ID is a random UUID; the original `chunk_id` (`p<page>_<index>`) is stored in the payload. Re-ingesting the same document appends new points (no deduplication).
 
+### Azure DI integration notes
+
+- **Always process page by page.** Use PyMuPDF to extract each page as a single-page PDF (`fitz.open(); single.insert_pdf(src, from_page=i, to_page=i); single.tobytes()`) and call Azure DI once per page. This solves: (1) the 4MB inline byte limit, (2) pages silently dropped when a complex table can't be fully resolved in multi-page context, (3) table detection failures on table-heavy pages.
+- **`para.role` is a `ParagraphRole` enum — never use `str(para.role)`.** It returns `"ParagraphRole.SECTION_HEADING"`, not `"sectionHeading"`. Always use `para.role.value` (or `getattr(para.role, 'value', None)`). All role-to-label lookups break silently without this.
+- **`output_content_format=DocumentContentFormat.MARKDOWN`** — use this on every call. The markdown renderer does not gate page inclusion on successful table cell-grid resolution; the default TEXT mode can silently drop pages dominated by complex tables.
+- **`page_num_override`** — when submitting single-page PDFs, Azure DI always returns `page_number=1`. Pass `page_num_override=actual_pg` into `_process_result()` to remap elements to the correct page. The rasterized `page_images[actual_pg]` is used for all crops.
+- **Figure text = empty string.** Textract and Azure DI both set `text=""` for figure elements. OCR noise from within a figure region is not useful — GPT vision generates the authoritative caption during enrichment.
+
 
 ---
 
@@ -141,3 +149,9 @@ Running research log for this project. Every time an approach fails, a wrong ass
 When a mistake is identified — caught by Murtuza or self-detected — append it here immediately. Do not wait until end of session.
 
 <!-- entries below -->
+[2026-04-10] [azure-di] — tried `pages="1-3"` param to force page 3 → didn't fix it; Azure DI still dropped the page → root cause is per-page submission, not a parameter.
+[2026-04-10] [azure-di] — tried `output_content_format=MARKDOWN` alone to fix missing pages → partially helped but not the fix → per-page submission is the real fix; MARKDOWN is a useful add-on, not a solution.
+[2026-04-10] [azure-di] — added PyMuPDF text fallback for Azure DI-missed pages → wrong direction; bypasses the API instead of fixing it → always use per-page submission so no pages are missed.
+[2026-04-10] [azure-di] — added size-based branching (≤4MB single call, >4MB per-page) → unnecessary complexity → always process per-page regardless of file size; it's simpler, more reliable, and handles all edge cases.
+[2026-04-10] [azure-di] — `str(para.role)` used for role lookup → returned enum repr `"ParagraphRole.SECTION_HEADING"` not value `"sectionHeading"` → all 7 section headings silently mis-labeled as "text"; always use `para.role.value`.
+[2026-04-10] [chunker] — consecutive `section_title` elements overwrote `pending_title` → earlier headings silently lost → fixed: emit orphan pending_title as standalone chunk before overwriting.
