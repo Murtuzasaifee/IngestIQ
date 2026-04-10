@@ -79,7 +79,7 @@ OPENAI_CHAT_MODEL=gpt-4o-mini
 # Qdrant (always required)
 QDRANT_URL=http://localhost:6333
 QDRANT_API_KEY=                         # leave empty for local Qdrant
-QDRANT_COLLECTION=naive_rag
+QDRANT_COLLECTION=ingest_iq
 VECTOR_SIZE=1536                        # must match embedding model dimension
 MAX_CHUNK_TOKENS=512
 

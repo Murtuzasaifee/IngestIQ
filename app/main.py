@@ -79,6 +79,7 @@ def load_config() -> dict:
         "AZURE_DI_KEY",
         "INGEST_PDF_PATH",
         "TOP_K",
+        "CROPS_DIR",
     ]:
         cfg[key] = os.getenv(key, "")
 
@@ -125,6 +126,7 @@ def cmd_ingest(cfg: dict) -> None:
         chunks=chunks,
         openai_client=openai_client,
         embedding_model=cfg["OPENAI_EMBEDDING_MODEL"],
+        crops_dir=cfg["CROPS_DIR"] or None,
     )
 
     modality_counts: dict = {}
