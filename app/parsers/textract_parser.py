@@ -10,18 +10,16 @@ locally with PyMuPDF, and returns a ParseResult.
 Credentials are picked up from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env
 vars, which load_dotenv() in main.py sets before this code runs.
 
-Mistake log reminders (see CLAUDE.md):
-- save_image=False is mandatory — True delegates to pdf2image which needs poppler.
-- Textractor() does not accept aws_access_key_id / aws_secret_access_key kwargs.
-- table.row_count / table.column_count, not table.rows.
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List
 
 import boto3
 import fitz  # PyMuPDF
+import watchtower
 from PIL import Image
 from textractor import Textractor
 from textractor.data.constants import TextractFeatures
@@ -72,13 +70,41 @@ class TextractParser(BaseDocumentParser):
     """
 
     def __init__(self, s3_bucket: str, aws_region: str, s3_prefix: str = "") -> None:
-        self._s3_bucket = s3_bucket
+        self._s3_bucket  = s3_bucket
         self._aws_region = aws_region
-        self._s3_prefix = s3_prefix.rstrip("/")
+        self._s3_prefix  = s3_prefix.rstrip("/")
+        self._setup_cloudwatch_logging()
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
+
+    def _setup_cloudwatch_logging(self) -> None:
+        """Attach a CloudWatch Logs handler to this module's logger.
+
+        Reads CW_LOG_GROUP and CW_LOG_STREAM from the environment (both
+        optional — defaults shown below). Guards against duplicate handlers
+        if the parser is instantiated more than once in the same process.
+        """
+        log_group  = os.getenv("CW_LOG_GROUP",  "/aws-textract-rag/textract")
+        log_stream = os.getenv("CW_LOG_STREAM", "textract-parser")
+
+        # Skip if a CloudWatch handler is already registered
+        if any(isinstance(h, watchtower.CloudWatchLogHandler) for h in logger.handlers):
+            return
+
+        logs_client = boto3.client("logs", region_name=self._aws_region)
+        handler = watchtower.CloudWatchLogHandler(
+            log_group_name=log_group,
+            log_stream_name=log_stream,
+            boto3_client=logs_client,
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        logger.addHandler(handler)
+        logger.info("CloudWatch logging enabled → %s / %s", log_group, log_stream)
 
     def parse(self, pdf_path: str) -> ParseResult:
         filename = Path(pdf_path).name

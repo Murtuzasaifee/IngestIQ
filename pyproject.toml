@@ -19,4 +19,5 @@ dependencies = [
     "pymupdf>=1.27.2.2",
     "python-dotenv>=1.2.2",
     "qdrant-client>=1.17.1",
+    "watchtower>=3.4.0",
 ]
