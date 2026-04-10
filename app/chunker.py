@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from parsers.base import ParsedElement, ParseResult
+from parsers.base import ParsedElement, ParseResult, _SKIP_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +23,6 @@ _ATOMIC_LABELS = {"table", "figure"}
 
 # Elements that act as forward-attaching headings
 _TITLE_LABELS = {"title", "section_title"}
-
-# Elements skipped entirely (no retrieval value)
-_SKIP_LABELS = {"page_header", "page_footer", "page_number"}
 
 
 # ---------------------------------------------------------------------------

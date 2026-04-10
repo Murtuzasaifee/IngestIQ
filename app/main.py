@@ -68,6 +68,7 @@ def load_config() -> dict:
 
     cfg["VECTOR_SIZE"]      = int(cfg["VECTOR_SIZE"])
     cfg["MAX_CHUNK_TOKENS"] = int(cfg["MAX_CHUNK_TOKENS"])
+    cfg["TOP_K"]            = int(os.getenv("TOP_K") or 5)
 
     # Backend-specific and optional vars — passed through as-is
     for key in [
@@ -78,7 +79,6 @@ def load_config() -> dict:
         "AZURE_DI_ENDPOINT",
         "AZURE_DI_KEY",
         "INGEST_PDF_PATH",
-        "TOP_K",
         "CROPS_DIR",
     ]:
         cfg[key] = os.getenv(key, "")
@@ -137,7 +137,6 @@ def cmd_ingest(cfg: dict) -> None:
 
 def cmd_query(cfg: dict, question: str) -> None:
     """Run a single RAG query against the indexed collection."""
-    top_k         = int(cfg.get("TOP_K") or 5)
     openai_client = OpenAI(api_key=cfg["OPENAI_API_KEY"])
     qdrant        = get_qdrant_client(cfg["QDRANT_URL"])
 
@@ -148,7 +147,7 @@ def cmd_query(cfg: dict, question: str) -> None:
         openai_client=openai_client,
         embedding_model=cfg["OPENAI_EMBEDDING_MODEL"],
         chat_model=cfg["OPENAI_CHAT_MODEL"],
-        top_k=top_k,
+        top_k=cfg["TOP_K"],
     )
 
     print("\n" + "=" * 60)

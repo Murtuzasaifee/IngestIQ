@@ -58,7 +58,7 @@ All pipeline improvement suggestions are tracked here with status, priority, and
 | # | Status | Priority | Title |
 |---|--------|----------|-------|
 | 9 | [ ] | Low | Fix orphan title page number — uses current element's page, not the title's actual page |
-| 10 | [ ] | Low | Deduplicate `_SKIP_LABELS` — defined identically in both `base.py` and `chunker.py` |
+| 10 | [x] | Low | Deduplicate `_SKIP_LABELS` — defined identically in both `base.py` and `chunker.py` |
 
 **#9 Detail:** When `pending_title` is flushed as a standalone chunk, `el.page_number` (the *next* element) is used instead of the page where the title appeared. Add `pending_title_page: Optional[int]` to track the title's origin page.
 
@@ -89,6 +89,6 @@ All pipeline improvement suggestions are tracked here with status, priority, and
 
 | # | Status | Priority | Title |
 |---|--------|----------|-------|
-| 15 | [ ] | Low | Move `TOP_K` int-parsing into `load_config()` alongside `VECTOR_SIZE` / `MAX_CHUNK_TOKENS` |
+| 15 | [x] | Low | Move `TOP_K` int-parsing into `load_config()` alongside `VECTOR_SIZE` / `MAX_CHUNK_TOKENS` |
 
 **#15 Detail:** `TOP_K` is parsed with `int(cfg.get("TOP_K") or 5)` at call site. Move it into the `load_config()` int-parsing block for consistency.
