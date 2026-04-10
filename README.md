@@ -78,8 +78,9 @@ OPENAI_CHAT_MODEL=gpt-4o-mini
 
 # Qdrant (always required)
 QDRANT_URL=http://localhost:6333
+QDRANT_API_KEY=                         # leave empty for local Qdrant
 QDRANT_COLLECTION=naive_rag
-VECTOR_SIZE=1536
+VECTOR_SIZE=1536                        # must match embedding model dimension
 MAX_CHUNK_TOKENS=512
 
 # AWS / Textract (only required when DOCUMENT_PARSER=textract)
@@ -88,6 +89,14 @@ AWS_SECRET_ACCESS_KEY=...
 AWS_REGION=us-east-1
 S3_BUCKET=your-bucket-name
 TEXTRACT_S3_PREFIX=aws-textract-input
+
+# CloudWatch logging (only used when DOCUMENT_PARSER=textract)
+CW_LOG_GROUP=/ingestiq/textract        # default if not set
+CW_LOG_STREAM=textract-parser          # default if not set
+
+# Azure Document Intelligence (only required when DOCUMENT_PARSER=azure)
+AZURE_DI_ENDPOINT=https://<resource>.cognitiveservices.azure.com/
+AZURE_DI_KEY=...
 ```
 
 ### AWS requirements (Textract backend only)
