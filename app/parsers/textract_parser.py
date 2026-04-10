@@ -118,6 +118,7 @@ class TextractParser(BaseDocumentParser):
 
                 if label == "figure":
                     image_b64 = crop_base64(page_image, bbox)
+                    text = ""  # OCR inside figure region is noise; GPT vision handles captioning
                 elif not text:
                     continue
 

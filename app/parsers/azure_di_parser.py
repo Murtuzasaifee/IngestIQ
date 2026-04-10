@@ -8,6 +8,11 @@ from a local PDF file, then maps them to the shared ParseResult contract.
 
 The PDF is sent directly to the Azure API as bytes — no cloud storage required.
 
+File size handling:
+    Azure DI enforces a 4MB limit on inline byte submissions. Files larger than
+    4MB are automatically split into individual pages using PyMuPDF and sent as
+    separate single-page API calls. Results are merged back into one ParseResult.
+
 Required env vars:
     AZURE_DI_ENDPOINT  — e.g. https://<resource>.cognitiveservices.azure.com/
     AZURE_DI_KEY       — your Azure DI API key
@@ -16,8 +21,9 @@ Install: uv add azure-ai-documentintelligence
 """
 
 import logging
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
@@ -33,7 +39,9 @@ from parsers.base import (
 
 logger = logging.getLogger(__name__)
 
-# Azure DI ParagraphRole string → normalised ParsedElement label
+# Azure DI ParagraphRole.value → normalised ParsedElement label.
+# Keys must match para.role.value (e.g. "sectionHeading"), NOT str(para.role)
+# which returns the enum repr "ParagraphRole.SECTION_HEADING".
 _ROLE_TO_LABEL: dict[str, str] = {
     "title":          "title",
     "sectionHeading": "section_title",
@@ -49,16 +57,24 @@ _ROLE_TO_LABEL: dict[str, str] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _role_value(role) -> str:
+    """Extract the string value from a ParagraphRole enum or plain string.
+
+    Azure DI SDK returns para.role as a ParagraphRole enum whose str() repr is
+    "ParagraphRole.SECTION_HEADING", not "sectionHeading". We must use .value
+    to get the actual string that matches _ROLE_TO_LABEL keys.
+    """
+    if role is None:
+        return ""
+    return getattr(role, "value", None) or str(role)
+
+
 def _polygon_to_bbox(
     polygon: List[float],
     page_width: float,
     page_height: float,
 ) -> Optional[dict]:
-    """Convert Azure DI polygon (flat x,y list in page units) to normalised bbox dict.
-
-    Azure DI returns coordinates in inches for PDFs. Dividing by page dimensions
-    normalises them to the 0–1 range expected by crop_base64 and Qdrant payloads.
-    """
+    """Convert Azure DI polygon (flat x,y list in page units) to normalised bbox dict."""
     if not polygon or page_width <= 0 or page_height <= 0:
         return None
     xs = polygon[0::2]
@@ -85,16 +101,13 @@ def _first_bbox_and_page(item, page_map: dict) -> Tuple[Optional[dict], int]:
 
 
 def _table_to_markdown(table) -> str:
-    """Render an Azure DI DocumentTable as a Markdown table string.
-
-    Builds a 2-D grid from cells (handles merged cells by writing to the
-    top-left slot only), then serialises with a separator after the header row.
-    """
+    """Render an Azure DI DocumentTable as a Markdown table string."""
+    if not table.column_count or not table.row_count:
+        return ""
     grid = [[""] * table.column_count for _ in range(table.row_count)]
     for cell in table.cells or []:
-        grid[cell.row_index][cell.column_index] = (
-            cell.content.replace("\n", " ").strip()
-        )
+        cell_text = (cell.content or "").replace("\n", " ").strip()
+        grid[cell.row_index][cell.column_index] = cell_text
     lines: List[str] = []
     for i, row in enumerate(grid):
         lines.append("| " + " | ".join(row) + " |")
@@ -104,11 +117,7 @@ def _table_to_markdown(table) -> str:
 
 
 def _build_table_span_intervals(result) -> List[Tuple[int, int]]:
-    """Collect character offset (start, end) intervals covered by all tables.
-
-    Azure DI includes table cell text inside result.paragraphs as well, which
-    would create duplicate chunks. We use these intervals to skip those paragraphs.
-    """
+    """Collect character offset intervals covered by all tables in a result."""
     intervals: List[Tuple[int, int]] = []
     for table in result.tables or []:
         for span in table.spans or []:
@@ -137,9 +146,8 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
     Sends the local PDF directly to the Azure API as bytes (no S3/blob storage
     required), then maps the structured result to ParsedElement / ParseResult.
 
-    Paragraph deduplication: Azure DI surfaces table cell content in
-    result.paragraphs in addition to result.tables. We filter those out using
-    character-span overlap detection before building elements.
+    Files larger than Azure DI's 4MB inline limit are automatically split into
+    per-page submissions and the results merged transparently.
     """
 
     def __init__(self, endpoint: str, api_key: str) -> None:
@@ -153,6 +161,7 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
     def parse(self, pdf_path: str) -> ParseResult:
         try:
             from azure.ai.documentintelligence import DocumentIntelligenceClient
+            from azure.ai.documentintelligence.models import DocumentContentFormat
             from azure.core.credentials import AzureKeyCredential
         except ImportError as exc:
             raise RuntimeError(
@@ -162,96 +171,36 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
 
         logger.info("Starting Azure DI analysis: %s", pdf_path)
 
+        # Rasterize first — gives us the true page count and images for crops.
+        page_images = self._rasterize(pdf_path)
+        n_pages     = len(page_images)
+
         client = DocumentIntelligenceClient(
             endpoint=self._endpoint,
             credential=AzureKeyCredential(self._api_key),
         )
 
-        with open(pdf_path, "rb") as f:
-            poller = client.begin_analyze_document(
-                model_id="prebuilt-layout",
-                body=f,
-                content_type="application/octet-stream",
-            )
-        result = poller.result()
-        logger.info("Azure DI complete. Pages: %d", len(result.pages or []))
+        logger.info("PDF: %d pages — processing page by page", n_pages)
 
-        page_images     = self._rasterize(pdf_path)
-        page_map        = {p.page_number: p for p in result.pages or []}
-        table_intervals = _build_table_span_intervals(result)
-
-        # Build per-page element lists
         pages_elements: dict[int, List[ParsedElement]] = {}
 
-        # --- Paragraphs (skip those that are inside table spans) ---
-        for para in result.paragraphs or []:
-            if _overlaps_table(para, table_intervals):
-                continue
+        with fitz.open(pdf_path) as src:
+            for pg_idx in range(n_pages):
+                pg_num     = pg_idx + 1
+                single_doc = fitz.open()
+                single_doc.insert_pdf(src, from_page=pg_idx, to_page=pg_idx)
+                page_bytes = single_doc.tobytes()
+                single_doc.close()
 
-            text = (para.content or "").strip()
-            if not text:
-                continue
-
-            label        = _ROLE_TO_LABEL.get(str(para.role or ""), "text")
-            bbox, pg_num = _first_bbox_and_page(para, page_map)
-
-            pages_elements.setdefault(pg_num, []).append(ParsedElement(
-                label=label,
-                text=text,
-                bbox=bbox,
-                score=1.0,       # Azure DI exposes confidence at word level only
-                reading_order=0,
-                page_number=pg_num,
-            ))
-
-        # --- Tables ---
-        for table in result.tables or []:
-            bbox, pg_num = _first_bbox_and_page(table, page_map)
-            markdown     = _table_to_markdown(table)
-
-            # Table caption → emit as figure_title so chunker links it to the table chunk
-            if table.caption and (table.caption.content or "").strip():
-                cap_text        = table.caption.content.strip()
-                cap_bbox, _     = _first_bbox_and_page(table.caption, page_map)
-                pages_elements.setdefault(pg_num, []).append(ParsedElement(
-                    label="figure_title",
-                    text=cap_text,
-                    bbox=cap_bbox or bbox,
-                    score=1.0,
-                    reading_order=0,
-                    page_number=pg_num,
-                ))
-
-            pages_elements.setdefault(pg_num, []).append(ParsedElement(
-                label="table",
-                text=markdown,
-                bbox=bbox,
-                score=1.0,
-                reading_order=0,
-                page_number=pg_num,
-                image_base64=crop_base64(page_images.get(pg_num), bbox),
-            ))
-
-        # --- Figures ---
-        for figure in result.figures or []:
-            bbox, pg_num = _first_bbox_and_page(figure, page_map)
-            page_image   = page_images.get(pg_num)
-
-            # Azure DI caption used as the initial figure text; enrichment
-            # will replace/augment it with a GPT vision caption.
-            caption_text = ""
-            if figure.caption and (figure.caption.content or "").strip():
-                caption_text = figure.caption.content.strip()
-
-            pages_elements.setdefault(pg_num, []).append(ParsedElement(
-                label="figure",
-                text=caption_text,
-                bbox=bbox,
-                score=1.0,
-                reading_order=0,
-                page_number=pg_num,
-                image_base64=crop_base64(page_image, bbox),
-            ))
+                logger.info("Page %d/%d — %d bytes", pg_num, n_pages, len(page_bytes))
+                result = self._call_azure_di(client, page_bytes, DocumentContentFormat, "1")
+                logger.info(
+                    "  → %d paragraphs | %d tables | %d figures",
+                    len(result.paragraphs or []),
+                    len(result.tables or []),
+                    len(result.figures or []),
+                )
+                self._process_result(result, page_images, pages_elements, page_num_override=pg_num)
 
         # --- Assemble PageResults sorted by reading order ---
         page_results: List[PageResult] = []
@@ -269,7 +218,8 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
                 elements=elements,
                 markdown=assemble_markdown(elements),
             ))
-            logger.info("Page %d: %d elements", pg_num, len(elements))
+            label_counts: Counter = Counter(el.label for el in elements)
+            logger.info("Page %d: %d elements %s", pg_num, len(elements), dict(label_counts))
 
         total = sum(len(p.elements) for p in page_results)
         logger.info("Azure DI parse complete. Total elements: %d", total)
@@ -282,6 +232,82 @@ class AzureDocumentIntelligenceParser(BaseDocumentParser):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _call_azure_di(self, client, pdf_bytes: bytes, DocumentContentFormat, pages: str) -> Any:
+        """Submit pdf_bytes to Azure DI and return the AnalyzeResult."""
+        # output_content_format=MARKDOWN uses a different internal renderer that
+        # does not gate page inclusion on successful table cell-grid resolution.
+        # In TEXT mode a page dominated by a complex table can be silently dropped;
+        # MARKDOWN mode always emits every page with best-effort markdown tables.
+        poller = client.begin_analyze_document(
+            model_id="prebuilt-layout",
+            body=pdf_bytes,
+            content_type="application/octet-stream",
+            pages=pages,
+            output_content_format=DocumentContentFormat.MARKDOWN,
+        )
+        return poller.result()
+
+    def _process_result(
+        self,
+        result: Any,
+        page_images: Dict[int, Image.Image],
+        pages_elements: dict,
+        page_num_override: Optional[int] = None,
+    ) -> None:
+        """Map an Azure DI AnalyzeResult into pages_elements.
+
+        page_num_override: when set, all elements from this result are assigned
+        to this page number. Used when processing single-page PDFs where Azure
+        DI always returns page_number=1 regardless of the actual document page.
+        """
+        page_map        = {p.page_number: p for p in result.pages or []}
+        table_intervals = _build_table_span_intervals(result)
+
+        role_counts: Counter = Counter(_role_value(p.role) or "body" for p in result.paragraphs or [])
+        logger.debug("Paragraph roles: %s", dict(role_counts))
+
+        # --- Paragraphs ---
+        for para in result.paragraphs or []:
+            if _overlaps_table(para, table_intervals):
+                continue
+            text = (para.content or "").strip()
+            if not text:
+                continue
+            label        = _ROLE_TO_LABEL.get(_role_value(para.role), "text")
+            bbox, pg_num = _first_bbox_and_page(para, page_map)
+            actual_pg    = page_num_override or pg_num
+            pages_elements.setdefault(actual_pg, []).append(ParsedElement(
+                label=label, text=text, bbox=bbox,
+                score=1.0, reading_order=0, page_number=actual_pg,
+            ))
+
+        # --- Tables ---
+        for table in result.tables or []:
+            bbox, pg_num = _first_bbox_and_page(table, page_map)
+            actual_pg    = page_num_override or pg_num
+            markdown     = _table_to_markdown(table)
+            if table.caption and (table.caption.content or "").strip():
+                markdown = f"**{table.caption.content.strip()}**\n\n{markdown}"
+            logger.debug("Table page=%d rows=%d cols=%d", actual_pg, table.row_count, table.column_count)
+            pages_elements.setdefault(actual_pg, []).append(ParsedElement(
+                label="table", text=markdown, bbox=bbox,
+                score=1.0, reading_order=0, page_number=actual_pg,
+                image_base64=crop_base64(page_images.get(actual_pg), bbox),
+            ))
+
+        # --- Figures ---
+        for figure in result.figures or []:
+            bbox, pg_num = _first_bbox_and_page(figure, page_map)
+            actual_pg    = page_num_override or pg_num
+            caption_text = ""
+            if figure.caption and (figure.caption.content or "").strip():
+                caption_text = figure.caption.content.strip()
+            pages_elements.setdefault(actual_pg, []).append(ParsedElement(
+                label="figure", text=caption_text, bbox=bbox,
+                score=1.0, reading_order=0, page_number=actual_pg,
+                image_base64=crop_base64(page_images.get(actual_pg), bbox),
+            ))
 
     def _rasterize(self, pdf_path: str, dpi: int = 250) -> Dict[int, Image.Image]:
         """Rasterize every page with PyMuPDF for image/table crops."""

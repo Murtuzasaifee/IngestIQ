@@ -168,6 +168,20 @@ def chunk_document(
         # 4. Title elements — flush text, carry forward to next content element
         if el.label in _TITLE_LABELS:
             flush_text()
+            # Consecutive headings: emit previous orphan title rather than silently
+            # overwriting it. Without this, all but the last heading in a sequence
+            # of headings (e.g. table-of-contents, multi-level section headers)
+            # would be lost.
+            if pending_title:
+                chunks.append(Chunk(
+                    chunk_id=f"p{el.page_number}_{chunk_index}",
+                    text=pending_title,
+                    modality="text",
+                    page=el.page_number,
+                    elements=["title"],
+                    metadata={"source": parse_result.source_file},
+                ))
+                chunk_index += 1
             pending_title = el.text.strip()
             continue
 
